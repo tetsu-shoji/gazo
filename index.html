@@ -3,7 +3,7 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8" />
-  <title>差分検出（画像＋コメント出力／YOLOv8＋OpenCV）</title>
+  <title>差分検出（画像＋コメント出力／YOLOv8＋OpenCV＋OCR）</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root{ --bg:#0b132b; --panel:#1c2541; --text:#eaeaea; --accent:#5bc0be; }
@@ -42,7 +42,7 @@
   </script>
 </head>
 <body>
-<header><h1>差分検出（画像＋コメント出力／YOLOv8＋OpenCV）</h1></header>
+<header><h1>差分検出（画像＋コメント出力／YOLOv8＋OpenCV＋OCR）</h1></header>
 
 <main>
   <!-- 左：入力 -->
@@ -122,7 +122,7 @@
   <section class="card">
     <h2 style="margin:0 0 8px">結果（差分強調表示）</h2>
     <canvas id="canvas" width="1024" height="768"></canvas>
-    <p class="small">下地は<strong>基準画像</strong>。枠は少数化（NMS＋面積しきい値＋Top‑K）、ヒートは差分領域の濃淡で強調、Otsuで露出差への耐性を確保。</p>
+    <p class="small">下地は<strong>基準画像</strong>。枠は少数化（NMS＋面積しきい値＋Top‑K）、ヒートは差分領域の濃淡、Otsuで露出差への耐性。</p>
 
     <div class="comment">
       <h3>差分コメント</h3>
@@ -137,9 +137,10 @@
   </section>
 </main>
 
-<!-- 依存ライブラリ -->
+<!-- 依存ライブラリ（CDN） -->
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
 <script src="https://docs.opencv.org/4.x/opencv.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@v5/dist/tesseract.min.js"></script>
 
 <script>
 /* === UI参照 === */
@@ -180,7 +181,6 @@ const els = {
   btnCamShotB: document.getElementById('btnCamShotB'),
   btnCamStop:  document.getElementById('btnCamStop'),
   video: document.getElementById('videoPreview'),
-  // コメントDOM
   listAdded: document.getElementById('listAdded'),
   listRemoved: document.getElementById('listRemoved'),
   listMoved: document.getElementById('listMoved'),
@@ -346,7 +346,7 @@ function robustDecodeYOLOv8(tensor, info, confThr=0.35, nmsIoU=0.45){
     const gw = w/info.ratio,   gh = h/info.ratio;
     const x1 = Math.max(0, gx - gw/2), y1 = Math.max(0, gy - gh/2);
     const x2 = Math.min(info.origW, gx + gw/2), y2 = Math.min(info.origH, gy + gh/2);
-    boxes.push({x1,y1,x2,y2, conf, cls:cid, name:COCO80[cid]||'未定義'});
+    boxes.push({x1,y1,x2,y2, conf, cls:cid, name:COCO80[cid]||'物体'});
   }
   boxes.sort((a,b)=> b.conf - a.conf);
   const picked=[];
@@ -411,7 +411,7 @@ function nmsDiff(boxes, iouThr=0.3){
     const inter=w*h;
     const areaA=(a.x2-a.x1)*(a.y2-a.y1);
     const areaB=(b.x2-b.x1)*(b.y2-b.y1);
-    const union=areaA+areaB-inter;
+    const union=areaA + areaB - inter;
     return union>0 ? inter/union : 0;
   };
   const sorted=boxes.slice().sort((a,b)=> (b.conf||0)-(a.conf||0));
@@ -527,7 +527,7 @@ function drawNumberTag(ctx, x, y, idx, color='rgba(64,128,255,0.98)'){
   ctx.restore();
 }
 
-/* === コメント生成 === */
+/* === 位置語彙・数値整形 === */
 function posWord(xc,yc,W,H){
   const xr=xc/W, yr=yc/H;
   const h = xr<0.33 ? '左' : xr<0.66 ? '中央' : '右';
@@ -536,34 +536,75 @@ function posWord(xc,yc,W,H){
 }
 function pct(n){ return (n*100).toFixed(1); }
 
-function makeCommentItems(base, W, H, added, removed, matches){
-  // matches: [a,b,cost]
-  const moveItems=[];
-  const sizeThr = parseFloat(els.sizeThr.value);  // 面積相対差を「変化」とみなす
-  matches.forEach(([a,b,cost],i)=>{
+/* === OCR（Tesseract.js）と形状ルール === */
+async function ocrLabelFor(imgEl, box) {
+  const c = document.createElement('canvas');
+  const w = Math.max(8, Math.floor(box.x2 - box.x1));
+  const h = Math.max(8, Math.floor(box.y2 - box.y1));
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(imgEl, box.x1, box.y1, w, h, 0, 0, w, h);
+
+  try {
+    const result = await Tesseract.recognize(
+      c,
+      'jpn+eng',
+      { langPath: 'https://tessdata.projectnaptha.com/4.0.0' }
+    );
+    const text = (result?.data?.text || '').toLowerCase();
+    if (text.includes('pentel') || text.includes('pen') || text.includes('ペン') || text.includes('ボールペン')) return 'ペン';
+    if (text.includes('max')) return 'ホッチキス';
+    if (text.includes('phone') || text.includes('tel')) return '電話機';
+    return null;
+  } catch { return null; }
+}
+function ruleLabelFor(box) {
+  const w = Math.max(1, box.x2 - box.x1);
+  const h = Math.max(1, box.y2 - box.y1);
+  const ar = Math.max(w, h) / Math.min(w, h);   // アスペクト比
+  if (ar > 3) return '棒状アイテム（ペン候補）';
+  return null;
+}
+
+/* === コメント生成（名称推定付き） === */
+async function toLabeledItem(baseImgEl, b, idx, kind, W, H) {
+  const cpos = center(b); const pos = posWord(cpos.cx, cpos.cy, W, H);
+  const arPct = ((area(b) / (W*H)) * 100).toFixed(1);
+  let name = await ocrLabelFor(baseImgEl, b);
+  if (!name) name = ruleLabelFor(b);
+  if (!name) name = b.name || '物体';
+  return {
+    id: idx, kind, name,
+    pos, areaPct: arPct,
+    box: [Math.round(b.x1), Math.round(b.y1), Math.round(b.x2), Math.round(b.y2)]
+  };
+}
+
+async function makeCommentItemsAsync(baseImgEl, base, W, H, added, removed, matches) {
+  const moveItems = [];
+  const sizeThr = parseFloat(els.sizeThr.value);
+
+  for (let i=0;i<matches.length;i++){
+    const [a,b] = matches[i];
     const ca=center(a), cb=center(b);
     const dpx = Math.hypot(ca.cx-cb.cx, ca.cy-cb.cy);
     const sratio = Math.abs(area(a)-area(b))/Math.max(area(a),area(b));
-    if (dpx>Math.max(W,H)*0.015 || sratio>sizeThr){ // 位置差1.5%超またはサイズ差しきい値超
-      const pos = posWord(cb.cx, cb.cy, W, H);
-      moveItems.push({
-        id:i+1, kind:'moved', name:b.name||'物体', pos,
-        deltaPx:Math.round(dpx), sizeChange:pct(sratio), iou:pct(iouRect(a,b))
-      });
+    if (dpx>Math.max(W,H)*0.015 || sratio>sizeThr){
+      const item = await toLabeledItem(baseImgEl, b, i+1, 'moved', W, H);
+      item.deltaPx = Math.round(dpx); item.sizeChange = (sratio*100).toFixed(1);
+      item.iou = (iouRect(a,b)*100).toFixed(1);
+      moveItems.push(item);
     }
-  });
-
-  function toItem(b, idx, kind){
-    const c=center(b);
-    const pos=posWord(c.cx, c.cy, W, H);
-    const ar=area(b)/(W*H);
-    return {
-      id:idx, kind, name:b.name||'物体',
-      pos, areaPct:pct(ar), box:[Math.round(b.x1),Math.round(b.y1),Math.round(b.x2),Math.round(b.y2)]
-    };
   }
-  const addItems = added.map((b,i)=> toItem(b, i+1, 'added'));
-  const remItems = removed.map((b,i)=> toItem(b, i+1, 'removed'));
+
+  const addItems = [];
+  for (let i=0;i<added.length;i++){
+    addItems.push(await toLabeledItem(baseImgEl, added[i], i+1, 'added', W, H));
+  }
+  const remItems = [];
+  for (let i=0;i<removed.length;i++){
+    remItems.push(await toLabeledItem(baseImgEl, removed[i], i+1, 'removed', W, H));
+  }
   return {addItems, remItems, moveItems};
 }
 
@@ -588,13 +629,12 @@ function renderCommentPanel(base, counts, items){
 }
 
 /* === 描画（基準切替＋表現切替＋コメント作成） === */
-function drawWithBase(base, renderMode, imgA, imgB, detA, detB, assignment){
+async function drawWithBase(base, renderMode, imgA, imgB, detA, detB, assignment){
   const baseImg   = (base==='A') ? imgA : imgB;
   const otherImg  = (base==='A') ? imgB : imgA;
   const baseDet   = (base==='A') ? detA : detB;
-  const unmatchedAdded = (base==='A') ? assignment.unmatchedB : assignment.unmatchedA; // B側に追加 or A側に追加
+  const unmatchedAdded = (base==='A') ? assignment.unmatchedB : assignment.unmatchedA;
   const unmatchedRemoved = (base==='A') ? assignment.unmatchedA : assignment.unmatchedB;
-
   const matches = assignment.matches;
 
   const ctx = els.canvas.getContext('2d');
@@ -617,12 +657,10 @@ function drawWithBase(base, renderMode, imgA, imgB, detA, detB, assignment){
   // マスク
   const mask = buildMaskFromDetections(W,H, baseDet, baseImg.naturalWidth, baseImg.naturalHeight);
 
-  // 描画（boxes/heat）
   let hasChange=false;
   const sx = W / baseImg.naturalWidth, sy = H / baseImg.naturalHeight;
 
   if(renderMode==='boxes'){
-    // 追加側の枠を重点表示
     let boxes = unmatchedAdded.map(d=>({...d}));
     const minAreaRatio = parseFloat(els.minArea.value)/100.0;
     const minAreaPx = minAreaRatio * (baseImg.naturalWidth * baseImg.naturalHeight);
@@ -648,8 +686,8 @@ function drawWithBase(base, renderMode, imgA, imgB, detA, detB, assignment){
   const label = (base==='A') ? 'Bに追加の差分' : 'Aに追加の差分';
   drawBadge(ctx, hasChange ? `あり：${label}` : 'なし：顕著な差分なし', hasChange);
 
-  // コメント生成＆表示
-  const items = makeCommentItems(base, W, H, unmatchedAdded, unmatchedRemoved, matches);
+  // コメント生成＆表示（名称推定付き）
+  const items = await makeCommentItemsAsync(baseImg, base, W, H, unmatchedAdded, unmatchedRemoved, matches);
   const counts = { add:items.addItems.length, rem:items.remItems.length, mov:items.moveItems.length };
   renderCommentPanel(base, counts, items);
 
@@ -690,7 +728,7 @@ els.btnDetect.addEventListener('click', async ()=>{
     const assignment = greedyAssign(detA, detB, 0.45);
     const base = els.baseA.checked ? 'A' : 'B';
     const renderMode = els.modeHeat.checked ? 'heat' : 'boxes';
-    drawWithBase(base, renderMode, els.imgA, els.imgB, detA, detB, assignment);
+    await drawWithBase(base, renderMode, els.imgA, els.imgB, detA, detB, assignment);
 
     els.btnSaveJpg.disabled = true;
     setTimeout(()=>{ els.btnSaveJpg.disabled = false; }, 120);
@@ -714,9 +752,8 @@ els.btnCopyJson.addEventListener('click', ()=>{
   if(!lastDiffJson){ return; }
   navigator.clipboard.writeText(JSON.stringify(lastDiffJson, null, 2)).then(()=>{
     alert('差分JSONをクリップボードにコピーしました');
-  }).catch(e=> alert('コピーに失敗しました：'+e.message));
+ ;
 });
 </script>
 </body>
 </html>
-``
