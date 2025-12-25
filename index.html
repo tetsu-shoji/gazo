@@ -16,6 +16,7 @@
     label.btn{background:#3a506b;color:#d6eaff;padding:10px 12px;border-radius:8px;cursor:pointer}
     input[type=file]{display:none}
     canvas, img{max-width:100%;height:auto;border-radius:6px;border:1px solid #2f3b66;background:#000}
+    img{display:block}
     .controls{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
     .control{background:#162447;border:1px solid #2f3b66;border-radius:8px;padding:8px}
     .control label{display:block;font-size:12px;margin-bottom:6px;opacity:.85}
@@ -24,7 +25,7 @@
     .small{font-size:12px;opacity:.8}
     @media (max-width:900px){ main{grid-template-columns:1fr} }
   </style>
-  <!-- OpenCV.js の初期化通知 -->
+  <!-- OpenCV.js 初期化通知（onRuntimeInitialized を受けるため） -->
   <script>
     window.__cvReady = false;
     window.Module = { onRuntimeInitialized(){ window.__cvReady = true; console.log('OpenCV.js ready'); } };
@@ -37,8 +38,8 @@
   <section class="card">
     <h2 style="margin:0 0 8px">入力画像</h2>
     <div class="row">
-      <label class="btn">画像Aを選択<input id="fileA" type="file" accept="image/*"></label>
-      <label class="btn">画像Bを選択<input id="fileB" type="file" accept="image/*"></label>
+      <label class="btn">画像Aを選択<input id="fileA" type="file" accept="image/*" /></label>
+      <label class="btn">画像Bを選択<input id="fileB" type="file" accept="image/*" /></label>
       <button id="btnDetect" class="btn">差分を検出</button>
       <button id="btnSaveJpg" class="btn secondary" disabled>JPEGで保存</button>
     </div>
@@ -84,7 +85,7 @@
   </section>
 </main>
 
-<!-- ✅ 依存ライブラリ（CDN）：オフライン運用する場合は lib/ に同梱して相対パスへ変更 -->
+<!-- ✅ 依存ライブラリ（CDN）。オフライン運用する場合は lib/ に同梱したファイルへ差し替え -->
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
 <script src="https://docs.opencv.org/4.x/opencv.js"></script>
 
@@ -113,19 +114,20 @@ const els = {
 };
 let aReady=false, bReady=false;
 
-/* === 画像読み込み（createObjectURL版）=== */
-els.fileA.addEventListener('change', e => loadViaObjectURL(e.target.files[0], els.imgA, () => aReady=true));
-els.fileB.addEventListener('change', e => loadViaObjectURL(e.target.files[0], els.imgB, () => bReady=true));
+/* === 画像読み込み（createObjectURL版。HEIC検知＆エラー処理付）=== */
+els.fileA.addEventListener('change', e => loadViaObjectURL(e.target.files?.[0], els.imgA, () => aReady=true));
+els.fileB.addEventListener('change', e => loadViaObjectURL(e.target.files?.[0], els.imgB, () => bReady=true));
+
 function loadViaObjectURL(file, imgEl, onOk){
-  if(!file) return;
+  if(!file){ alert('ファイルが選択されていません'); return; }
   const mime = (file.type||'').toLowerCase();
-  if(!mime.startsWith('image/')){ alert('画像ファイルを選択してください。'); return; }
+  if(!mime.startsWith('image/')){ alert('画像ファイルを選択してください（JPEG/PNG推奨）'); return; }
   if(mime.includes('heic') || mime.includes('heif')){
-    alert('HEIC/HEIFは表示できない場合があります。JPEG/PNGでお試しください。'); return;
+    alert('HEIC/HEIFはブラウザで表示できない場合があります。JPEG/PNGでお試しください。'); return;
   }
   const url = URL.createObjectURL(file);
   imgEl.onload = ()=>{ URL.revokeObjectURL(url); onOk&&onOk(); };
-  imgEl.onerror = ()=>{ URL.revokeObjectURL(url); alert('画像の読み込みに失敗しました。'); };
+  imgEl.onerror = ()=>{ URL.revokeObjectURL(url); alert('画像の読み込みに失敗しました。ファイルが破損している可能性があります。'); };
   imgEl.src = url;
 }
 
@@ -141,10 +143,11 @@ function updateVals(){
 ['confThr','nmsThr','iouThr','sizeThr','cvThr','maxW'].forEach(id=>els[id].addEventListener('input',updateVals));
 updateVals();
 
-/* === YOLOv8 セッション === */
+/* === YOLOv8 セッション＆OpenCV準備 === */
 let yoloSession=null;
 async function ensureYolo(){
   if(!yoloSession){
+    // モデルは index.html と同じ階層に置く（並列）
     yoloSession = await ort.InferenceSession.create('./yolov8n.onnx', {
       executionProviders: ['wasm'], graphOptimizationLevel: 'all'
     });
@@ -163,15 +166,14 @@ function letterbox(imgEl, newShape=640, color=[114,114,114]){
   const iw = imgEl.naturalWidth, ih = imgEl.naturalHeight;
   const r = Math.min(newShape/iw, newShape/ih);
   const nw = Math.round(iw*r), nh = Math.round(ih*r);
-  const padW = newShape - nw, padH = newShape - nh;
-  const px = Math.round(padW/2), py = Math.round(padH/2);
+  const px = Math.round((newShape - nw)/2), py = Math.round((newShape - nh)/2);
 
   const c = document.createElement('canvas'); c.width=newShape; c.height=newShape;
   const ctx = c.getContext('2d');
   ctx.fillStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
   ctx.fillRect(0,0,newShape,newShape);
   ctx.drawImage(imgEl, 0,0, iw,ih, px,py, nw,nh);
-  return {canvas:c, ratio:r, padX:px, padY:py, newW:nw, newH:nh, origW:iw, origH:ih};
+  return {canvas:c, ratio:r, padX:px, padY:py, origW:iw, origH:ih};
 }
 function toCHWFloat32(canvas){
   const ctx = canvas.getContext('2d');
@@ -188,7 +190,7 @@ function toCHWFloat32(canvas){
 }
 
 /* === 推論・後処理 === */
-// Ultralytics YOLOv8 ONNX（640）: 出力 [84, 8400]（xywh, obj, 80クラス）
+// Ultralytics YOLOv8（640）出力想定: [1,84,8400] → flattenで [84,8400]
 function decodeYOLOv8(outData, info, confThr=0.35, nmsIoU=0.45){
   const numPred = 8400, numCls = 80, stride = numPred;
   const boxes=[];
@@ -196,7 +198,6 @@ function decodeYOLOv8(outData, info, confThr=0.35, nmsIoU=0.45){
     const x = outData[0*stride+i], y = outData[1*stride+i];
     const w = outData[2*stride+i], h = outData[3*stride+i];
     const obj = outData[4*stride+i];
-
     let best=0, cid=0;
     for(let c=0;c<numCls;c++){
       const v = outData[(5+c)*stride + i];
@@ -205,19 +206,19 @@ function decodeYOLOv8(outData, info, confThr=0.35, nmsIoU=0.45){
     const conf = obj*best;
     if(conf < confThr) continue;
 
+    // letterbox逆補正 → 元画像座標
     const cx = x - info.padX, cy = y - info.padY;
     const gx = cx/info.ratio,  gy = cy/info.ratio;
     const gw = w/info.ratio,   gh = h/info.ratio;
-
     const x1 = Math.max(0, gx - gw/2), y1 = Math.max(0, gy - gh/2);
     const x2 = Math.min(info.origW, gx + gw/2), y2 = Math.min(info.origH, gy + gh/2);
-
     boxes.push({x1,y1,x2,y2, conf, cls:cid});
   }
   // NMS
   boxes.sort((a,b)=>b.conf-a.conf);
   const picked=[];
- t xx1=Math.max(a.x1,b.x1), yy1=Math.max(a.y1,b.y1);
+  const iou = (a,b)=>{
+    const xx1=Math.max(a.x1,b.x1), yy1=Math.max(a.y1,b.y1);
     const xx2=Math.min(a.x2,b.x2), yy2=Math.min(a.y2,b.y2);
     const w=Math.max(0,xx2-xx1), h=Math.max(0,yy2-yy1);
     const inter=w*h;
@@ -367,16 +368,16 @@ els.btnDetect.addEventListener('click', async ()=>{
     const inputA = new ort.Tensor('float32', toCHWFloat32(lbA.canvas), [1,3,640,640]);
     const inputB = new ort.Tensor('float32', toCHWFloat32(lbB.canvas), [1,3,640,640]);
 
-    // 入出力名
-    const inNameA = yoloSession.inputNames[0];
+    // 入出力名を取得して正しく渡す（重要）
+    const inName = yoloSession.inputNames[0];
     const outName = yoloSession.outputNames[0];
 
     const confThr = parseFloat(els.confThr.value);
     const nmsIoU  = parseFloat(els.nmsThr.value);
 
     // 推論（A/B）
-    const outA = await yoloSession.run({ inputA });
-    const outB = await yoloSession.run({ inputB });
+    const outA = await yoloSession.run({ [inName]: inputA });
+    const outB = await yoloSession.run({ [inName]: inputB });
     const detA = decodeYOLOv8(outA[outName].data, {ratio:lbA.ratio, padX:lbA.padX, padY:lbA.padY, origW:lbA.origW, origH:lbA.origH}, confThr, nmsIoU);
     const detB = decodeYOLOv8(outB[outName].data, {ratio:lbB.ratio, padX:lbB.padX, padY:lbB.padY, origW:lbB.origW, origH:lbB.origH}, confThr, nmsIoU);
 
