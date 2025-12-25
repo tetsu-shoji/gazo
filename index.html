@@ -145,7 +145,7 @@ updateVals();
 let yoloSession=null;
 async function ensureYolo(){
   if(!yoloSession){
-    yoloSession = await ort.InferenceSession.create('./models/yolov8n.onnx', {
+    yoloSession = await ort.InferenceSession.create('./yolov8n.onnx', {
       executionProviders: ['wasm'], graphOptimizationLevel: 'all'
     });
     console.log('YOLOv8 ONNX loaded');
