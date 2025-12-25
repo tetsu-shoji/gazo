@@ -3,7 +3,7 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8" />
-  <title>差分検出（基準切替・カメラ撮影・YOLOv8＋OpenCV）</title>
+  <title>差分検出（画像＋コメント出力／YOLOv8＋OpenCV）</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root{ --bg:#0b132b; --panel:#1c2541; --text:#eaeaea; --accent:#5bc0be; }
@@ -24,9 +24,16 @@
     .btn{background:var(--accent);color:#012a36;border:none;border-radius:8px;padding:10px 12px;font-weight:700;cursor:pointer}
     .btn.secondary{background:#3a506b;color:#d6eaff}
     .small{font-size:12px;opacity:.8}
-    @media (max-width:900px){ main{grid-template-columns:1fr} }
+    @media (max-width:1100px){ main{grid-template-columns:1fr} }
     .toggle{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
     .legend{font-size:12px;opacity:.8;margin-top:6px}
+    /* コメントパネル */
+    .comment{background:#0d1b2a;border:1px solid #2f3b66;border-radius:10px;padding:10px;margin-top:10px}
+    .comment h3{margin:0 0 6px;font-size:14px}
+    .comment ol{margin:6px 0 0 18px}
+    .comment li{margin:4px 0}
+    .comment .badge{display:inline-block;background:#5bc0be;color:#012a36;border-radius:6px;padding:2px 6px;margin-right:6px;font-weight:700}
+    .comment .tag{display:inline-block;background:#3a506b;color:#d6eaff;border-radius:6px;padding:2px 6px;margin-left:6px;font-size:12px}
   </style>
   <!-- OpenCV.js 初期化通知 -->
   <script>
@@ -35,7 +42,7 @@
   </script>
 </head>
 <body>
-<header><h1>差分検出（基準切替・カメラ撮影・YOLOv8＋OpenCV）</h1></header>
+<header><h1>差分検出（画像＋コメント出力／YOLOv8＋OpenCV）</h1></header>
 
 <main>
   <!-- 左：入力 -->
@@ -46,6 +53,7 @@
       <label class="btn">画像Bを選択<input id="fileB" type="file" accept="image/*" /></label>
       <button id="btnDetect" class="btn">差分を検出</button>
       <button id="btnSaveJpg" class="btn secondary" disabled>JPEGで保存</button>
+      <button id="btnCopyJson" class="btn secondary" disabled>差分JSONをコピー</button>
     </div>
 
     <!-- カメラ操作 -->
@@ -65,14 +73,14 @@
       <span style="margin-left:12px">表現：</span>
       <label><input type="radio" name="render" id="modeBoxes" value="boxes" checked> 枠（少数）</label>
       <label><input type="radio" name="render" id="modeHeat" value="heat"> ヒートマップ</label>
-      <label style="margin-left:12px"><input type="checkbox" id="chkAlign"> 自動位置補正（試験）</label>
+      <label style="margin-left:12px"><input type="checkbox" id="chkAlign"> 自動位置補正（AFFINE）</label>
     </div>
     <p class="legend">
-      ・A基準：<span style="color:#80a0ff">青枠</span>／ヒートは赤系の濃淡。B基準：<span style="color:#ffa040">橙枠</span>／ヒートは赤系の濃淡。<br>
-      ・位置補正ONで、撮影時のわずかなズレを平行移動＋回転・スケール（AFFINE）で補正（未サポート環境では自動でフォールバック）。
+      ・A基準：<span style="color:#80a0ff">青枠</span>／B基準：<span style="color:#ffa040">橙枠</span>。  
+      ・位置補正ONで、撮影時のズレを平行移動＋回転・スケールで補正。
     </p>
 
-    <!-- しきい値群（おすすめデフォルト値済み） -->
+    <!-- しきい値群（おすすめデフォルト） -->
     <div class="controls">
       <div class="control"><label>YOLO 信頼度しきい値 <span id="confVal">0.35</span></label>
         <input id="confThr" type="range" min="0.10" max="0.90" step="0.05" value="0.35">
@@ -80,15 +88,14 @@
       <div class="control"><label>YOLO NMS IoU <span id="nmsVal">0.45</span></label>
         <input id="nmsThr" type="range" min="0.20" max="0.90" step="0.05" value="0.45">
       </div>
-      <div class="control"><label>差分IoU（位置一致判定） <span id="iouVal">0.45</span></label>
+      <div class="control"><label>差分IoU（目安） <span id="iouVal">0.45</span></label>
         <input id="iouThr" type="range" min="0.20" max="0.90" step="0.05" value="0.45">
       </div>
       <div class="control"><label>サイズ差（面積相対差） <span id="sizeVal">0.50</span></label>
         <input id="sizeThr" type="range" min="0.10" max="0.90" step="0.05" value="0.50">
       </div>
       <div class="control"><label>OpenCV差分しきい値 <span id="cvThrVal">0</span></label>
-        <!-- 0 で Otsu 自動閾を使用 -->
-        <input id="cvThr" type="range" min="0" max="80" step="2" value="0">
+        <input id="cvThr" type="range" min="0" max="80" step="2" value="0"><!-- 0=Otsu -->
       </div>
       <div class="control"><label>最小差分面積（%） <span id="minAreaVal">0.10</span></label>
         <input id="minArea" type="range" min="0.02" max="0.50" step="0.02" value="0.10">
@@ -111,15 +118,26 @@
     </div>
   </section>
 
-  <!-- 右：結果 -->
+  <!-- 右：結果 ＋ コメント -->
   <section class="card">
     <h2 style="margin:0 0 8px">結果（差分強調表示）</h2>
     <canvas id="canvas" width="1024" height="768"></canvas>
-    <p class="small">下地は<strong>基準画像</strong>。枠は少数化（NMS＋面積しきい値＋Top‑K）、ヒートは差分領域の濃淡で強調、OpenCVは自動閾（Otsu）を推奨します。</p>
+    <p class="small">下地は<strong>基準画像</strong>。枠は少数化（NMS＋面積しきい値＋Top‑K）、ヒートは差分領域の濃淡で強調、Otsuで露出差への耐性を確保。</p>
+
+    <div class="comment">
+      <h3>差分コメント</h3>
+      <div id="summaryHdr" class="small" style="opacity:.85"></div>
+      <h4 style="margin:10px 0 6px">追加</h4>
+      <ol id="listAdded"></ol>
+      <h4 style="margin:10px 0 6px">削除</h4>
+      <ol id="listRemoved"></ol>
+      <h4 style="margin:10px 0 6px">移動・サイズ変化</h4>
+      <ol id="listMoved"></ol>
+    </div>
   </section>
 </main>
 
-<!-- ✅ 依存ライブラリ（CDN） -->
+<!-- 依存ライブラリ -->
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
 <script src="https://docs.opencv.org/4.x/opencv.js"></script>
 
@@ -133,6 +151,7 @@ const els = {
   canvas: document.getElementById('canvas'),
   btnDetect: document.getElementById('btnDetect'),
   btnSaveJpg: document.getElementById('btnSaveJpg'),
+  btnCopyJson: document.getElementById('btnCopyJson'),
   baseA: document.getElementById('baseA'),
   baseB: document.getElementById('baseB'),
   modeBoxes: document.getElementById('modeBoxes'),
@@ -161,10 +180,16 @@ const els = {
   btnCamShotB: document.getElementById('btnCamShotB'),
   btnCamStop:  document.getElementById('btnCamStop'),
   video: document.getElementById('videoPreview'),
+  // コメントDOM
+  listAdded: document.getElementById('listAdded'),
+  listRemoved: document.getElementById('listRemoved'),
+  listMoved: document.getElementById('listMoved'),
+  summaryHdr: document.getElementById('summaryHdr'),
 };
 let aReady=false, bReady=false;
+let lastDiffJson=null;
 
-/* === 画像読み込み（createObjectURL／HEIC検知） === */
+/* === 画像読み込み === */
 els.fileA.addEventListener('change', e => loadViaObjectURL(e.target.files?.[0], els.imgA, () => aReady=true));
 els.fileB.addEventListener('change', e => loadViaObjectURL(e.target.files?.[0], els.imgB, () => bReady=true));
 function loadViaObjectURL(file, imgEl, onOk){
@@ -229,8 +254,6 @@ async function ensureYolo(){
       executionProviders: ['wasm'], graphOptimizationLevel: 'all'
     });
     console.log('YOLOv8 ONNX loaded');
-    console.log('InputNames:', yoloSession.inputNames);
-    console.log('OutputNames:', yoloSession.outputNames);
   }
 }
 function waitForCv(){
@@ -240,13 +263,12 @@ function waitForCv(){
   });
 }
 
-/* === 前処理（letterbox 640x640） === */
+/* === 前処理 === */
 function letterbox(imgEl, newShape=640, color=[114,114,114]){
   const iw = imgEl.naturalWidth, ih = imgEl.naturalHeight;
   const r = Math.min(newShape/iw, newShape/ih);
   const nw = Math.round(iw*r), nh = Math.round(ih*r);
   const px = Math.round((newShape - nw)/2), py = Math.round((newShape - nh)/2);
-
   const c = document.createElement('canvas'); c.width=newShape; c.height=newShape;
   const ctx = c.getContext('2d');
   ctx.fillStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
@@ -268,10 +290,21 @@ function toCHWFloat32(canvas){
   return data;
 }
 
+/* === COCO80 クラス名（YOLOv8n標準） === */
+const COCO80 = [
+ 'person','bicycle','car','motorcycle','airplane','bus','train','truck','boat','traffic light',
+ 'fire hydrant','stop sign','parking meter','bench','bird','cat','dog','horse','sheep','cow','elephant','bear','zebra','giraffe',
+ 'backpack','umbrella','handbag','tie','suitcase','frisbee','skis','snowboard','sports ball','kite','baseball bat','baseball glove',
+ 'skateboard','surfboard','tennis racket','bottle','wine glass','cup','fork','knife','spoon','bowl','banana','apple','sandwich',
+ 'orange','broccoli','carrot','hot dog','pizza','donut','cake','chair','couch','potted plant','bed','dining table','toilet','tv',
+ 'laptop','mouse','remote','keyboard','cell phone','microwave','oven','toaster','sink','refrigerator','book','clock','vase',
+ 'scissors','teddy bear','hair drier','toothbrush'
+];
+
 /* === 安全なシグモイド === */
 const sigmoid = x => 1 / (1 + Math.exp(-x));
 
-/* === 推論・後処理（YOLO：形状・活性化を自動吸収） === */
+/* === 推論・後処理（形状/活性化差吸収） === */
 function robustDecodeYOLOv8(tensor, info, confThr=0.35, nmsIoU=0.45){
   const dims = tensor.dims || [];
   const data = tensor.data;
@@ -313,7 +346,7 @@ function robustDecodeYOLOv8(tensor, info, confThr=0.35, nmsIoU=0.45){
     const gw = w/info.ratio,   gh = h/info.ratio;
     const x1 = Math.max(0, gx - gw/2), y1 = Math.max(0, gy - gh/2);
     const x2 = Math.min(info.origW, gx + gw/2), y2 = Math.min(info.origH, gy + gh/2);
-    boxes.push({x1,y1,x2,y2, conf, cls:cid});
+    boxes.push({x1,y1,x2,y2, conf, cls:cid, name:COCO80[cid]||'未定義'});
   }
   boxes.sort((a,b)=> b.conf - a.conf);
   const picked=[];
@@ -333,7 +366,7 @@ function robustDecodeYOLOv8(tensor, info, confThr=0.35, nmsIoU=0.45){
   return picked;
 }
 
-/* === 差分（複合コストで頑健化） === */
+/* === 差分（複合コスト） === */
 function iouRect(a,b){
   const xx1=Math.max(a.x1,b.x1), yy1=Math.max(a.y1,b.y1);
   const xx2=Math.min(a.x2,b.x2), yy2=Math.min(a.y2,b.y2);
@@ -344,72 +377,62 @@ function iouRect(a,b){
   return union>0 ? inter/union : 0;
 }
 function center(a){ return {cx:(a.x1+a.x2)/2, cy:(a.y1+a.y2)/2}; }
-function area(a){ return Math.max(1, (a.x2-a.x1)*(a.y2-a.y1)); }
+function area(b){ return Math.max(1,(b.x2-b.x1)*(b.y2-b.y1)); }
 function pairwiseCost(a,b){
   const i = iouRect(a,b);
-  const ca = center(a), cb = center(b);
+  const ca=center(a), cb=center(b);
   const d = Math.hypot(ca.cx-cb.cx, ca.cy-cb.cy);
   const s = Math.abs(area(a)-area(b))/Math.max(area(a),area(b));
   const classPenalty = (a.cls===b.cls) ? 0 : 0.15;
   return (1-i)*0.65 + (d/(Math.sqrt(area(a))+Math.sqrt(area(b))))*0.25 + s*0.10 + classPenalty;
 }
-function greedyAssign(A, B, costThr=0.45){
-  const usedB = new Set();
-  const matches = [];
+function greedyAssign(A,B,costThr=0.45){
+  const usedB=new Set(); const matches=[];
   for(const a of A){
-    let best = {j:-1, cost:1e9};
+    let best={j:-1,cost:1e9};
     for(let j=0;j<B.length;j++){
       if(usedB.has(j)) continue;
-      const c = pairwiseCost(a,B[j]);
-      if(c < best.cost) best={j, cost:c};
+      const c=pairwiseCost(a,B[j]);
+      if(c<best.cost) best={j, cost:c};
     }
-    if(best.j>=0 && best.cost<=costThr){ usedB.add(best.j); matches.push([a, B[best.j]]); }
+    if(best.j>=0 && best.cost<=costThr){ usedB.add(best.j); matches.push([a,B[best.j],best.cost]); }
   }
   const unmatchedA = A.filter(a => !matches.some(m=>m[0]===a));
   const unmatchedB = B.filter((_,j)=> !usedB.has(j));
   return {matches, unmatchedA, unmatchedB};
 }
-function semanticDiffBothRobust(objsA, objsB){
-  const {unmatchedA, unmatchedB} = greedyAssign(objsA, objsB, 0.45);
-  return { diffA: unmatchedA, diffB: unmatchedB };
-}
 
-/* === 差分枠：NMS＆面積フィルタ＆Top‑K === */
+/* === 差分枠ユーティリティ === */
 function nmsDiff(boxes, iouThr=0.3){
-  const iou = (a,b)=>{
-    const xx1 = Math.max(a.x1,b.x1), yy1 = Math.max(a.y1,b.y1);
-    const xx2 = Math.min(a.x2,b.x2), yy2 = Math.min(a.y2,b.y2);
-    const w = Math.max(0, xx2-xx1), h = Math.max(0, yy2-yy1);
-    const inter = w*h;
-    const areaA = (a.x2-a.x1)*(a.y2-a.y1);
-    const areaB = (b.x2-b.x1)*(b.y2-b.y1);
-    const union = areaA + areaB - inter;
+  const iou=(a,b)=>{
+    const xx1=Math.max(a.x1,b.x1), yy1=Math.max(a.y1,b.y1);
+    const xx2=Math.min(a.x2,b.x2), yy2=Math.min(a.y2,b.y2);
+    const w=Math.max(0,xx2-xx1), h=Math.max(0,yy2-yy1);
+    const inter=w*h;
+    const areaA=(a.x2-a.x1)*(a.y2-a.y1);
+    const areaB=(b.x2-b.x1)*(b.y2-b.y1);
+    const union=areaA+areaB-inter;
     return union>0 ? inter/union : 0;
   };
-  const sorted = boxes.slice().sort((a,b)=> (b.conf||0)-(a.conf||0));
-  const picked = [];
+  const sorted=boxes.slice().sort((a,b)=> (b.conf||0)-(a.conf||0));
+  const picked=[];
   sorted.forEach(b=>{
-    let keep = true;
+    let keep=true;
     for(const p of picked){ if(iou(b,p)>iouThr){ keep=false; break; } }
     if(keep) picked.push(b);
   });
   return picked;
 }
-function filterByArea(boxes, minArea){
-  return boxes.filter(b => (b.x2-b.x1)*(b.y2-b.y1) >= minArea);
-}
-function topKByArea(boxes, k){
-  const arr = boxes.slice().sort((a,b)=> ((b.x2-b.x1)*(b.y2-b.y1)) - ((a.x2-a.x1)*(a.y2-a.y1)));
-  return arr.slice(0, k);
-}
+function filterByArea(boxes, minArea){ return boxes.filter(b => area(b) >= minArea); }
+function topKByArea(boxes, k){ return boxes.slice().sort((a,b)=> area(b)-area(a)).slice(0,k); }
 
-/* === マスク（基準側の大物体：UI可変） === */
+/* === マスク（基準側の大物体） === */
 function buildMaskFromDetections(W,H, objs, origW, origH){
   const c=document.createElement('canvas'); c.width=W; c.height=H;
   const ctx=c.getContext('2d');
   ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
   ctx.fillStyle='#fff';
-  const pct = Math.max(0, parseFloat(els.maskPct.value)) / 100.0; // %
+  const pct = Math.max(0, parseFloat(els.maskPct.value)) / 100.0;
   const bigAreaThr = (W*H) * pct;
   objs.forEach(o=>{
     const w=(o.x2-o.x1), h=(o.y2-o.y1);
@@ -420,7 +443,7 @@ function buildMaskFromDetections(W,H, objs, origW, origH){
   return c;
 }
 
-/* === 位置補正（ECC：AFFINE→TRANSLATION） === */
+/* === 位置補正（AFFINE→TRANSLATION） === */
 function alignOtherToBaseCanvasAffine(baseImgEl, otherImgEl, W, H){
   const baseC=document.createElement('canvas'), otherC=document.createElement('canvas');
   baseC.width=W; baseC.height=H; otherC.width=W; otherC.height=H;
@@ -433,18 +456,13 @@ function alignOtherToBaseCanvasAffine(baseImgEl, otherImgEl, W, H){
     cv.cvtColor(B,gB,cv.COLOR_RGBA2GRAY);
     cv.GaussianBlur(gA,gA,new cv.Size(3,3),0);
     cv.GaussianBlur(gB,gB,new cv.Size(3,3),0);
-
     const warp = cv.Mat.eye(2,3,cv.CV_32F);
     const criteria = new cv.TermCriteria(cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 100, 1e-6);
-    try{
-      cv.findTransformECC(gA, gB, warp, cv.MOTION_AFFINE, criteria);
-    }catch(_){
-      cv.findTransformECC(gA, gB, warp, cv.MOTION_TRANSLATION, criteria);
-    }
+    try{ cv.findTransformECC(gA, gB, warp, cv.MOTION_AFFINE, criteria); }
+    catch(_){ cv.findTransformECC(gA, gB, warp, cv.MOTION_TRANSLATION, criteria); }
     const warped = new cv.Mat();
     cv.warpAffine(B, warped, warp, new cv.Size(W,H), cv.INTER_LINEAR, cv.BORDER_REFLECT);
     cv.imshow(otherC, warped);
-
     [A,B,gA,gB,warp,warped].forEach(m=>m.delete());
     return otherC;
   }catch(e){
@@ -453,75 +471,131 @@ function alignOtherToBaseCanvasAffine(baseImgEl, otherImgEl, W, H){
   }
 }
 
-/* === OpenCVヒート：Lab-L＋Otsuで露出耐性UP === */
+/* === ヒート：Lab-L＋Otsu === */
 function cvDiffHeatBetter(baseImgEl, otherCanvas, outCanvas, maskCanvas, thrVal){
   const W=outCanvas.width, H=outCanvas.height;
-
   const tmpA=document.createElement('canvas'); tmpA.width=W; tmpA.height=H;
   tmpA.getContext('2d').drawImage(baseImgEl,0,0,W,H);
-
   const matA=cv.imread(tmpA), matB=cv.imread(otherCanvas);
   const labA=new cv.Mat(), labB=new cv.Mat();
   cv.cvtColor(matA,labA,cv.COLOR_RGBA2RGB);
   cv.cvtColor(matB,labB,cv.COLOR_RGBA2RGB);
   cv.cvtColor(labA,labA,cv.COLOR_RGB2Lab);
   cv.cvtColor(labB,labB,cv.COLOR_RGB2Lab);
-
-  const channelsA=new cv.MatVector(), channelsB=new cv.MatVector();
-  cv.split(labA,channelsA); cv.split(labB,channelsB);
-  const LA=channelsA.get(0), LB=channelsB.get(0);
-
+  const mvA=new cv.MatVector(), mvB=new cv.MatVector();
+  cv.split(labA,mvA); cv.split(labB,mvB);
+  const LA=mvA.get(0), LB=mvB.get(0);
   const diff=new cv.Mat(); cv.absdiff(LA,LB,diff);
   cv.GaussianBlur(diff,diff,new cv.Size(5,5),0);
-
   const maskMat=cv.imread(maskCanvas);
   const maskGray=new cv.Mat(); cv.cvtColor(maskMat,maskGray,cv.COLOR_RGBA2GRAY);
   const invMask=new cv.Mat(); cv.threshold(maskGray,invMask,128,255,cv.THRESH_BINARY_INV);
   const masked=new cv.Mat(); cv.bitwise_and(diff,invMask,masked);
-
   const bw=new cv.Mat();
   if(thrVal<=0){ cv.threshold(masked,bw,0,255,cv.THRESH_BINARY|cv.THRESH_OTSU); }
   else { cv.threshold(masked,bw,thrVal,255,cv.THRESH_BINARY); }
-
-  const heat=new cv.Mat();
-  cv.applyColorMap(bw, heat, cv.COLORMAP_TURBO);
-
-  const ctx=outCanvas.getContext('2d');
-  ctx.save();
-  ctx.globalAlpha = 0.35;
+  const heat=new cv.Mat(); cv.applyColorMap(bw, heat, cv.COLORMAP_TURBO);
+  const ctx=outCanvas.getContext('2d'); ctx.save(); ctx.globalAlpha=0.35;
   const heatCanvas=document.createElement('canvas'); heatCanvas.width=W; heatCanvas.height=H;
-  cv.imshow(heatCanvas, heat);
-  ctx.drawImage(heatCanvas,0,0);
-  ctx.restore();
-
-  [matA,matB,labA,labB,channelsA,channelsB,LA,LB,diff,maskMat,maskGray,invMask,masked,bw,heat]
-    .forEach(m=>{ try{ m.delete(); }catch(_){ }});
+  cv.imshow(heatCanvas, heat); ctx.drawImage(heatCanvas,0,0); ctx.restore();
+  [matA,matB,labA,labB,mvA,mvB,LA,LB,diff,maskMat,maskGray,invMask,masked,bw,heat].forEach(m=>{ try{ m.delete(); }catch(_){ }});
   return true;
 }
 
-/* === バッジ（簡易） === */
+/* === バッジ・番号描画 === */
 function drawBadge(ctx, text, ok=true){
   const W=ctx.canvas.width;
   ctx.save();
   ctx.font = `${Math.max(16, Math.floor(W/48))}px system-ui`;
-  const pad=10;
+  const pad=10, txtH = Math.max(28, Math.floor(W/32));
   const txtW = ctx.measureText(text).width + pad*2;
-  const txtH = Math.max(28, Math.floor(W/32));
   ctx.fillStyle = ok ? 'rgba(46,204,113,0.9)' : 'rgba(231,76,60,0.9)';
   ctx.fillRect(pad, pad, txtW, txtH);
   ctx.strokeStyle='rgba(0,0,0,0.3)'; ctx.lineWidth=2;
   ctx.strokeRect(pad, pad, txtW, txtH);
-  ctx.fillStyle='#fff';
-  ctx.fillText(text, pad+6, pad+txtH*0.7);
+  ctx.fillStyle='#fff'; ctx.fillText(text, pad+6, pad+txtH*0.7);
+  ctx.restore();
+}
+function drawNumberTag(ctx, x, y, idx, color='rgba(64,128,255,0.98)'){
+  ctx.save();
+  ctx.fillStyle=color; ctx.strokeStyle='#000'; ctx.lineWidth=1.5;
+  const r=Math.max(10, Math.floor(ctx.canvas.width/96));
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+  ctx.fillStyle='#fff'; ctx.font=`${Math.max(12, Math.floor(ctx.canvas.width/64))}px system-ui`;
+  const t=String(idx); const m=ctx.measureText(t);
+  ctx.fillText(t, x - m.width/2, y + r*0.35);
   ctx.restore();
 }
 
-/* === 描画（基準切替＋表現切替） === */
-function drawWithBase(base, renderMode, imgA, imgB, detA, detB, diffA, diffB){
+/* === コメント生成 === */
+function posWord(xc,yc,W,H){
+  const xr=xc/W, yr=yc/H;
+  const h = xr<0.33 ? '左' : xr<0.66 ? '中央' : '右';
+  const v = yr<0.33 ? '上' : yr<0.66 ? '中' : '下';
+  return `${v}${h}`;
+}
+function pct(n){ return (n*100).toFixed(1); }
+
+function makeCommentItems(base, W, H, added, removed, matches){
+  // matches: [a,b,cost]
+  const moveItems=[];
+  const sizeThr = parseFloat(els.sizeThr.value);  // 面積相対差を「変化」とみなす
+  matches.forEach(([a,b,cost],i)=>{
+    const ca=center(a), cb=center(b);
+    const dpx = Math.hypot(ca.cx-cb.cx, ca.cy-cb.cy);
+    const sratio = Math.abs(area(a)-area(b))/Math.max(area(a),area(b));
+    if (dpx>Math.max(W,H)*0.015 || sratio>sizeThr){ // 位置差1.5%超またはサイズ差しきい値超
+      const pos = posWord(cb.cx, cb.cy, W, H);
+      moveItems.push({
+        id:i+1, kind:'moved', name:b.name||'物体', pos,
+        deltaPx:Math.round(dpx), sizeChange:pct(sratio), iou:pct(iouRect(a,b))
+      });
+    }
+  });
+
+  function toItem(b, idx, kind){
+    const c=center(b);
+    const pos=posWord(c.cx, c.cy, W, H);
+    const ar=area(b)/(W*H);
+    return {
+      id:idx, kind, name:b.name||'物体',
+      pos, areaPct:pct(ar), box:[Math.round(b.x1),Math.round(b.y1),Math.round(b.x2),Math.round(b.y2)]
+    };
+  }
+  const addItems = added.map((b,i)=> toItem(b, i+1, 'added'));
+  const remItems = removed.map((b,i)=> toItem(b, i+1, 'removed'));
+  return {addItems, remItems, moveItems};
+}
+
+function renderCommentPanel(base, counts, items){
+  const hdr = `基準：${base}　追加:${counts.add}／削除:${counts.rem}／移動・サイズ:${counts.mov}`;
+  els.summaryHdr.textContent = hdr;
+  function fillList(ul, arr, tagColor){
+    ul.innerHTML='';
+    arr.forEach(it=>{
+      const li=document.createElement('li');
+      li.innerHTML = `<span class="badge">${it.id}</span>${it.name}（${it.pos}）` +
+                     (it.areaPct? `<span class="tag" style="background:${tagColor}">面積比:${it.areaPct}%</span>`:'') +
+                     (it.sizeChange? `<span class="tag" style="background:${tagColor}">サイズ差:${it.sizeChange}%</span>`:'') +
+                     (it.deltaPx? `<span class="tag" style="background:${tagColor}">移動:${it.deltaPx}px</span>`:'') +
+                     (it.iou? `<span class="tag" style="background:${tagColor}">IoU:${it.iou}%</span>`:'');
+      ul.appendChild(li);
+    });
+  }
+  fillList(els.listAdded,  items.addItems,  '#5bc0be');
+  fillList(els.listRemoved,items.remItems,  '#ff9f43');
+  fillList(els.listMoved,  items.moveItems, '#9b59b6');
+}
+
+/* === 描画（基準切替＋表現切替＋コメント作成） === */
+function drawWithBase(base, renderMode, imgA, imgB, detA, detB, assignment){
   const baseImg   = (base==='A') ? imgA : imgB;
   const otherImg  = (base==='A') ? imgB : imgA;
   const baseDet   = (base==='A') ? detA : detB;
-  let boxes       = (base==='A') ? diffB.map(d=>({...d})) : diffA.map(d=>({...d}));
+  const unmatchedAdded = (base==='A') ? assignment.unmatchedB : assignment.unmatchedA; // B側に追加 or A側に追加
+  const unmatchedRemoved = (base==='A') ? assignment.unmatchedA : assignment.unmatchedB;
+
+  const matches = assignment.matches;
 
   const ctx = els.canvas.getContext('2d');
   const MAX_W = parseInt(els.maxW.value,10);
@@ -540,36 +614,51 @@ function drawWithBase(base, renderMode, imgA, imgB, detA, detB, diffA, diffB){
     otherAlignedCanvas.getContext('2d').drawImage(otherImg,0,0,W,H);
   }
 
-  // マスク（基準側の大物）
+  // マスク
   const mask = buildMaskFromDetections(W,H, baseDet, baseImg.naturalWidth, baseImg.naturalHeight);
 
-  const sx = W / baseImg.naturalWidth, sy = H / baseImg.naturalHeight;
+  // 描画（boxes/heat）
   let hasChange=false;
+  const sx = W / baseImg.naturalWidth, sy = H / baseImg.naturalHeight;
 
   if(renderMode==='boxes'){
+    // 追加側の枠を重点表示
+    let boxes = unmatchedAdded.map(d=>({...d}));
     const minAreaRatio = parseFloat(els.minArea.value)/100.0;
     const minAreaPx = minAreaRatio * (baseImg.naturalWidth * baseImg.naturalHeight);
     boxes = filterByArea(boxes, minAreaPx);
     boxes = nmsDiff(boxes, 0.35);
     boxes = topKByArea(boxes, parseInt(els.topK.value,10));
+    hasChange = boxes.length>0;
 
     ctx.lineWidth = Math.max(3, Math.floor(W/512));
-    if(base==='A'){ ctx.strokeStyle='rgba(64,128,255,0.98)'; ctx.fillStyle='rgba(64,128,255,0.20)'; }
-    else          { ctx.strokeStyle='rgba(255,160,64,0.98)'; ctx.fillStyle='rgba(255,160,64,0.20)'; }
-    boxes.forEach(b=>{
+    const colStroke = (base==='A') ? 'rgba(64,128,255,0.98)' : 'rgba(255,160,64,0.98)';
+    const colFill   = (base==='A') ? 'rgba(64,128,255,0.20)' : 'rgba(255,160,64,0.20)';
+    ctx.strokeStyle=colStroke; ctx.fillStyle=colFill;
+
+    boxes.forEach((b,idx)=>{
       const x=b.x1*sx, y=b.y1*sy, w=(b.x2-b.x1)*sx, h=(b.y2-b.y1)*sy;
       ctx.fillRect(x,y,w,h); ctx.strokeRect(x,y,w,h);
+      drawNumberTag(ctx, x+Math.max(14,w*0.1), y+Math.max(14,h*0.1), idx+1, colStroke);
     });
-    hasChange = boxes.length>0;
   }else{
     hasChange = cvDiffHeatBetter(baseImg, otherAlignedCanvas, els.canvas, mask, parseInt(els.cvThr.value,10));
   }
 
   const label = (base==='A') ? 'Bに追加の差分' : 'Aに追加の差分';
   drawBadge(ctx, hasChange ? `あり：${label}` : 'なし：顕著な差分なし', hasChange);
+
+  // コメント生成＆表示
+  const items = makeCommentItems(base, W, H, unmatchedAdded, unmatchedRemoved, matches);
+  const counts = { add:items.addItems.length, rem:items.remItems.length, mov:items.moveItems.length };
+  renderCommentPanel(base, counts, items);
+
+  // JSONエクスポート（コピー用）
+  lastDiffJson = { base, counts, items };
+  els.btnCopyJson.disabled = false;
 }
 
-/* === 推論ボタン（入力キー自動） === */
+/* === 推論ボタン === */
 els.btnDetect.addEventListener('click', async ()=>{
   if(!aReady || !bReady){ alert('画像A・画像Bを選択（または撮影）してください'); return; }
   els.btnDetect.disabled = true; els.btnDetect.textContent = '推論中…';
@@ -584,7 +673,6 @@ els.btnDetect.addEventListener('click', async ()=>{
 
     const inName  = yoloSession.inputNames[0];
     const outName = yoloSession.outputNames[0];
-
     const feedsA = {}; feedsA[inName] = inputA;
     const feedsB = {}; feedsB[inName] = inputB;
 
@@ -593,18 +681,16 @@ els.btnDetect.addEventListener('click', async ()=>{
 
     const outA = await yoloSession.run(feedsA);
     const outB = await yoloSession.run(feedsB);
-
     const tensorA = outA[outName] || Object.values(outA)[0];
     const tensorB = outB[outName] || Object.values(outB)[0];
 
     const detA = robustDecodeYOLOv8(tensorA, {ratio:lbA.ratio, padX:lbA.padX, padY:lbA.padY, origW:lbA.origW, origH:lbA.origH}, confThr, nmsIoU);
     const detB = robustDecodeYOLOv8(tensorB, {ratio:lbB.ratio, padX:lbB.padX, padY:lbB.padY, origW:lbB.origW, origH:lbB.origH}, confThr, nmsIoU);
 
-    const {diffA, diffB} = semanticDiffBothRobust(detA, detB);
-
+    const assignment = greedyAssign(detA, detB, 0.45);
     const base = els.baseA.checked ? 'A' : 'B';
     const renderMode = els.modeHeat.checked ? 'heat' : 'boxes';
-    drawWithBase(base, renderMode, els.imgA, els.imgB, detA, detB, diffA, diffB);
+    drawWithBase(base, renderMode, els.imgA, els.imgB, detA, detB, assignment);
 
     els.btnSaveJpg.disabled = true;
     setTimeout(()=>{ els.btnSaveJpg.disabled = false; }, 120);
@@ -616,7 +702,7 @@ els.btnDetect.addEventListener('click', async ()=>{
   }
 });
 
-/* === 保存 === */
+/* === 保存・JSONコピー === */
 els.btnSaveJpg.addEventListener('click', ()=>{
   const dataUrl = els.canvas.toDataURL('image/jpeg', 0.88);
   const a=document.createElement('a');
@@ -624,6 +710,13 @@ els.btnSaveJpg.addEventListener('click', ()=>{
   a.download=`差分結果_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.jpg`;
   a.click();
 });
+els.btnCopyJson.addEventListener('click', ()=>{
+  if(!lastDiffJson){ return; }
+  navigator.clipboard.writeText(JSON.stringify(lastDiffJson, null, 2)).then(()=>{
+    alert('差分JSONをクリップボードにコピーしました');
+  }).catch(e=> alert('コピーに失敗しました：'+e.message));
+});
 </script>
 </body>
 </html>
+``
